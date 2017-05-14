@@ -64,8 +64,7 @@ func loadWiki(cube *CUBE.CUBE, filename string) error {
 			Colle: dcolle,
 		})
 	}
-	println("Total", len(vertices), "vertices,", ne, "edges")
-	cube.FinalizeGraph(100)
+	cube.FinalizeGraph(0)
 	return nil
 }
 
@@ -142,4 +141,50 @@ func loadMtx(cube *CUBE.CUBE, filename string) error {
 	}
 	cube.FinalizeGraph(0)
 	return nil
+}
+
+func loadSampleGraph(cube *CUBE.CUBE) {
+	for i := 0; i < 4; i++ {
+		colle := make([]CUBE.Data, cube.Sc)
+		for j := range colle {
+			colle[j] = DColle{v: rand.Float64()}
+		}
+		cube.AddVertex(i, &CUBE.VertexData{Share: DColle{}, Colle: colle})
+	}
+
+	colle := make([]CUBE.Data, cube.Sc)
+	for j := range colle {
+		colle[j] = DColle{v: 0}
+	}
+	cube.AddEdge(0, 2,
+		&CUBE.EdgeData{
+			Share: DShare{Err:0, Rate: float64(cube.Sc)},
+			Colle: colle,
+		})
+	cube.AddEdge(1, 0,
+		&CUBE.EdgeData{
+			Share: DShare{Err:0, Rate: float64(cube.Sc)},
+			Colle: colle,
+		})
+	cube.AddEdge(1, 2,
+		&CUBE.EdgeData{
+			Share: DShare{Err:0, Rate: float64(cube.Sc)},
+			Colle: colle,
+		})
+	cube.AddEdge(1, 3,
+		&CUBE.EdgeData{
+			Share: DShare{Err:0, Rate: float64(cube.Sc)},
+			Colle: colle,
+		})
+	cube.AddEdge(3, 0,
+		&CUBE.EdgeData{
+			Share: DShare{Err:0, Rate: float64(cube.Sc)},
+			Colle: colle,
+		})
+	cube.AddEdge(3, 2,
+		&CUBE.EdgeData{
+			Share: DShare{Err:0, Rate: float64(cube.Sc)},
+			Colle: colle,
+		})
+	cube.FinalizeGraph(1)
 }

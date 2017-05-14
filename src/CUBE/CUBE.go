@@ -12,12 +12,17 @@ type CUBE struct {
 	wg              sync.WaitGroup
 	sync            bool
 	RpcCount        RPCCounter
+	NVertices       uint64
+	NPureVertices   uint64
+	NPureEdges      uint64
 }
 
 type GatherFunc func(vshared Data, vcolle Data, eshared Data, ecolle Data) interface{}
 type ApplyFunc func(vshared Data, vcolle Data, sum interface{}) Data
 type SumFunc func(a interface{}, b interface{}) interface{}
 type SinkFunc func(uShare Data, uColle Data, vShare Data, vColle Data, eShare Data, eColle Data) Data
+type LocalCombinerFunc func(share Data, colle []Data) Data
+type UpdateEdgeFunc func(share Data, colle []Data) *EdgeData
 
 func CreateCUBE(N int, L int, Sc int, synchronous bool) (*CUBE, error) {
 	if N == 0 || L == 0 {
@@ -38,6 +43,9 @@ func CreateCUBE(N int, L int, Sc int, synchronous bool) (*CUBE, error) {
 			Internal: 0,
 			InternalSize: 0,
 		},
+		NVertices: 0,
+		NPureVertices: 0,
+		NPureEdges: 0,
 	}
 	cube.wg.Add(N)
 	for i := 0; i < N; i++ {
@@ -62,16 +70,16 @@ func (cube *CUBE) Sink(f SinkFunc) {
 	}
 }
 
-func (cube *CUBE) UpdateEdge(f func(*EdgeData)) {
+func (cube *CUBE) UpdateEdge(f UpdateEdgeFunc, localCombiner LocalCombinerFunc) {
 	if cube.sync {
 		for i := 0; i < cube.N / cube.L; i++ {
 			done := make(chan interface{})
-			cube.SendCommand(i, CmdUpdateEdge{f: f, done: done})
+			cube.SendCommand(i, CmdUpdateEdge{f: f, localCombiner: localCombiner, done: done})
 			<-done
 		}
 	} else {
 		for i := 0; i < cube.N / cube.L; i++ {
-			cube.SendCommand(i, CmdUpdateEdge{f: f})
+			cube.SendCommand(i, CmdUpdateEdge{f: f, localCombiner: localCombiner})
 		}
 	}
 }

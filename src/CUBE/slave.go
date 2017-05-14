@@ -3,6 +3,7 @@ package CUBE
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 )
 
 type Vertex struct {
@@ -31,25 +32,27 @@ func CountIngress(vertex int, edges []Edge) int {
 
 type Worker struct {
 	cube                  *CUBE
-	node                  int
+	node, nodeInLayer     int
 	layer_base            int
 	localSc               int
 	vertices              []Vertex
 	edges                 []Edge
 	finalizing, finalized bool
 	finalize_sync         sync.WaitGroup
+	elock                 sync.RWMutex
+	vlock                 sync.RWMutex
 }
 
 func (worker *Worker) handleInternal(internal chan interface{}) {
 	for _cmd := range internal {
 		switch _cmd.(type) {
-		case CmdCountIngress:
-			cmd := _cmd.(CmdCountIngress)
-			cmd.resp <- CountIngress(cmd.i, worker.edges)
-			break
 		case CmdAddVertexMirror:
 			cmd := _cmd.(CmdAddVertexMirror)
 			found := false
+			worker.elock.Lock()
+			worker.edges = append(worker.edges, cmd.edges...)
+			worker.elock.Unlock()
+			worker.vlock.Lock()
 			for vid, v := range worker.vertices {
 				if v.i == cmd.i {
 					v.mirror = true
@@ -66,17 +69,21 @@ func (worker *Worker) handleInternal(internal chan interface{}) {
 					Vertex{i: cmd.i, mirror: true, master: worker.cube.TargetNode(cmd.i), data: cmd.data, localId: cmd.localId})
 				cmd.resp <- len(worker.vertices) - 1
 			}
+			worker.vlock.Unlock()
 			break
 		case CmdAddEdgeMirror:
 			if worker.finalizing {
-				panic("fuck")
+				panic("Call FinalizeGraph() first")
 			}
 			cmd := _cmd.(CmdAddEdgeMirror)
+			worker.elock.Lock()
 			worker.edges = append(worker.edges, Edge{s: cmd.s, t: cmd.t, mirror: true})
+			worker.elock.Unlock()
 			break
 		case CmdGetLocalId:
 			cmd := _cmd.(CmdGetLocalId)
 			found := false
+			worker.vlock.RLock()
 			for vid, v := range worker.vertices {
 				if v.i == cmd.i {
 					cmd.resp <- vid
@@ -84,62 +91,62 @@ func (worker *Worker) handleInternal(internal chan interface{}) {
 					break
 				}
 			}
+			worker.vlock.RUnlock()
 			if !found {
 				panic("Vertex not found")
 			}
 			break
 		case CmdFetchVertex:
 			if !worker.finalized {
-				panic("fuck")
+				panic("Call FinalizeGraph() first")
 			}
 			cmd := _cmd.(CmdFetchVertex)
+			worker.vlock.RLock()
 			cmd.resp <- worker.vertices[cmd.i].data
+			worker.vlock.RUnlock()
 			break
 		case CmdFetchEdge:
 			if !worker.finalized {
-				panic("fuck")
+				panic("Call FinalizeGraph() first")
 			}
 			cmd := _cmd.(CmdFetchEdge)
-			cmd.resp <- worker.edges[cmd.eid].data
+			worker.elock.RLock()
+			if cmd.localCombiner != nil {
+				cmd.resp <- []Data{
+					cmd.localCombiner(worker.edges[cmd.eid].data.Share, worker.edges[cmd.eid].data.Colle),
+				}
+			} else {
+				cmd.resp <- worker.edges[cmd.eid].data.Colle
+			}
+			worker.elock.RUnlock()
 			break
 		case CmdPushEdge:
 			if !worker.finalized {
-				panic("fuck")
+				panic("Call FinalizeGraph() first")
 			}
 			cmd := _cmd.(CmdPushEdge)
+			worker.elock.Lock()
 			worker.edges[cmd.eid].data = cmd.data
-			break
-		case CmdMirrorVertexPull:
-			cmd := _cmd.(CmdMirrorVertexPull)
-			sum := make([]interface{}, worker.localSc)
-			for _, e := range worker.edges {
-				if !e.mirror && worker.vertices[e.s].i == cmd.globalId {
-					v := *worker.vertices[e.t].data
-					for i, colled := range v.Colle {
-						sum[i] = cmd.sum(
-							sum[i],
-							cmd.g(v.Share, colled, e.data.Share, e.data.Colle[i]))
-					}
-				}
+			worker.elock.Unlock()
+		case CmdPushEdgeShare:
+			if !worker.finalized {
+				panic("Call FinalizeGraph() first")
 			}
-			cmd.resp <- &sum
-			break
+			cmd := _cmd.(CmdPushEdgeShare)
+			worker.elock.Lock()
+			worker.edges[cmd.eid].data.Share = cmd.data
+			worker.elock.Unlock()
+		case CmdMirrorVertexPull:
+			worker.cmdMirrorPull(_cmd.(CmdMirrorVertexPull))
 		case CmdFinalizeSync:
 			worker.finalize_sync.Done()
 		case CmdMirrorVertexPush:
-			cmd := _cmd.(CmdMirrorVertexPush)
-			sum := make([]interface{}, worker.localSc)
-			for _, e := range worker.edges {
-				if !e.mirror && e.t == cmd.localId {
-					v := worker.vertices[e.t].data
-					for i, colled := range v.Colle {
-						sum[i] = cmd.sum(
-							sum[i],
-							cmd.g(v.Share, colled, e.data.Share, e.data.Colle[i]))
-					}
-				}
-			}
-			cmd.resp <- &sum
+			worker.cmdMirrorPush(_cmd.(CmdMirrorVertexPush))
+		case CmdPushVertex:
+			cmd := _cmd.(CmdPushVertex)
+			worker.vlock.Lock()
+			worker.vertices[cmd.localId].data = cmd.data
+			worker.vlock.Unlock()
 		}
 	}
 }
@@ -149,52 +156,59 @@ func (worker *Worker) handleCmd(cmds chan interface{}) {
 		switch _cmd.(type) {
 		case CmdAddEdge:
 			if worker.finalizing {
-				panic("fuck")
+				panic("Never add edge after FinalizeGraph()")
 			}
 			cmd := _cmd.(CmdAddEdge)
+			worker.elock.Lock()
 			worker.edges = append(worker.edges, Edge{s: cmd.s, t: cmd.t, data: cmd.data})
+			worker.elock.Unlock()
 			break
 		case CmdAddVertex:
 			if worker.finalizing {
-				panic("fuck")
+				panic("Never add vertex after FinalizeGraph()")
 			}
 			cmd := _cmd.(CmdAddVertex)
+			worker.vlock.Lock()
 			worker.vertices = append(worker.vertices,
-				Vertex{i: cmd.i, data: cmd.data, master: worker.node, localId: len(worker.vertices)})
+				Vertex{i: cmd.i, data: cmd.data, master: worker.nodeInLayer, localId: len(worker.vertices)})
+			worker.vlock.Unlock()
 			break
 		case CmdFinalizeGraph:
 			if worker.finalizing {
-				panic("fuck")
+				panic("Never FinalizeGraph() twice")
 			}
 			worker.finalizing = true
 			cmd := _cmd.(CmdFinalizeGraph)
 
 			// First, collect all vertices' in-degree
 			// And distribute high-degree vertices
+			worker.vlock.RLock()
 			for vid, v := range worker.vertices {
-				if v.master == worker.node && CountIngress(vid, worker.edges) > cmd.threshold {
-					for i := 0; i < worker.cube.N / worker.cube.L; i++ {
+				if v.master == worker.nodeInLayer && CountIngress(v.i, worker.edges) > cmd.threshold {
+					for i := 0; i < worker.cube.NperL; i++ {
 						if worker.layer_base + i == worker.node {
 							continue
 						}
 						var movedEdge []Edge = []Edge{}
-						for j, e := range worker.edges {
-							if e.t == v.i && worker.cube.TargetNode(e.s) != worker.node % worker.cube.NperL {
+						worker.elock.Lock()
+						for j := 0; j < len(worker.edges); j++ {
+							e := worker.edges[j]
+							if e.t == v.i && worker.cube.TargetNode(e.s) == i {
 								movedEdge = append(movedEdge, e)
-								if j == len(worker.edges) - 1 {
-									worker.edges = worker.edges[:j]
-								} else {
-									worker.edges = append(worker.edges[:j], worker.edges[j + 1:]...)
-								}
+								worker.edges[j] = worker.edges[len(worker.edges) - 1]
+								worker.edges = worker.edges[:len(worker.edges) - 1]
+								j--
 							}
 						}
+						worker.elock.Unlock()
 						resp := make(chan int)
 						worker.cube.SendInternal(worker.layer_base + i,
 							CmdAddVertexMirror{i: v.i, data: v.data, localId: vid, edges: movedEdge, resp: resp})
-						v.mirrors = append(v.mirrors, worker.layer_base + i, <-resp)
+						worker.vertices[vid].mirrors = append(v.mirrors, worker.layer_base + i, <-resp)
 					}
 				}
 			}
+			worker.vlock.RUnlock()
 
 			// Then, send synchronization signal
 			for i := 0; i < worker.cube.NperL; i++ {
@@ -209,33 +223,29 @@ func (worker *Worker) handleCmd(cmds chan interface{}) {
 
 			// Generate globalId->localId mapping
 			vexist := make(map[int]int)
+			worker.vlock.RLock()
 			for i, v := range worker.vertices {
 				vexist[v.i] = i
 			}
+			worker.vlock.RUnlock()
 
 			// Create mirror vertices if needed
 			for i, e := range worker.edges {
-				snode := worker.cube.TargetNode(e.s)
-				if snode != worker.node {
-					if _, ok := vexist[e.s]; !ok {
-						worker.vertices = append(worker.vertices, Vertex{i: e.s, master: snode})
-						vexist[e.s] = len(worker.vertices) - 1
-						resp := make(chan int)
-						worker.cube.SendInternal(worker.layer_base + worker.cube.TargetNode(e.s),
-							CmdGetLocalId{i: e.s, resp: resp})
-						worker.vertices[len(worker.vertices) - 1].localId = <-resp
-					}
+				if _, ok := vexist[e.s]; !ok {
+					worker.vertices = append(worker.vertices, Vertex{i: e.s, master: worker.cube.TargetNode(e.s)})
+					vexist[e.s] = len(worker.vertices) - 1
+					resp := make(chan int)
+					worker.cube.SendInternal(worker.layer_base + worker.cube.TargetNode(e.s),
+						CmdGetLocalId{i: e.s, resp: resp})
+					worker.vertices[len(worker.vertices) - 1].localId = <-resp
 				}
-				tnode := worker.cube.TargetNode(e.t)
-				if tnode != worker.node {
-					if _, ok := vexist[e.t]; !ok {
-						worker.vertices = append(worker.vertices, Vertex{i: e.t, master: tnode})
-						vexist[e.t] = len(worker.vertices) - 1
-						resp := make(chan int)
-						worker.cube.SendInternal(worker.layer_base + worker.cube.TargetNode(e.t),
-							CmdGetLocalId{i: e.t, resp: resp})
-						worker.vertices[len(worker.vertices) - 1].localId = <-resp
-					}
+				if _, ok := vexist[e.t]; !ok {
+					worker.vertices = append(worker.vertices, Vertex{i: e.t, master: worker.cube.TargetNode(e.t)})
+					vexist[e.t] = len(worker.vertices) - 1
+					resp := make(chan int)
+					worker.cube.SendInternal(worker.layer_base + worker.cube.TargetNode(e.t),
+						CmdGetLocalId{i: e.t, resp: resp})
+					worker.vertices[len(worker.vertices) - 1].localId = <-resp
 				}
 				worker.edges[i].s = vexist[e.s]
 				worker.edges[i].t = vexist[e.t]
@@ -243,25 +253,25 @@ func (worker *Worker) handleCmd(cmds chan interface{}) {
 
 			// Finalization finish
 			worker.finalized = true
-			println("Node", worker.node, "has", len(worker.vertices), "vertices,", len(worker.edges), "edges")
+			atomic.AddUint64(&worker.cube.NVertices, uint64(len(worker.vertices)))
 			cmd.resp <- nil
 		case CmdSink:
 			if !worker.finalized {
-				panic("fuck")
+				panic("Call FinalizeGraph() first")
 			}
 			worker.cmdSink(_cmd.(CmdSink))
 		case CmdUpdateEdge:
 			if !worker.finalized {
-				panic("fuck")
+				panic("Call FinalizeGraph() first")
 			}
 			worker.cmdUpdateEdge(_cmd.(CmdUpdateEdge))
 		case CmdDump:
 			if !worker.finalized {
-				panic("fuck")
+				panic("Call FinalizeGraph() first")
 			}
 			cmd := _cmd.(CmdDump)
 			for _, v := range worker.vertices {
-				if v.master == worker.node {
+				if v.master == worker.nodeInLayer {
 					str := fmt.Sprint("Vertex[", v.i, "]: ")
 					if v.data.Share != nil {
 						str += "share " + v.data.Share.Dump() + " "
@@ -292,16 +302,15 @@ func (worker *Worker) handleCmd(cmds chan interface{}) {
 					str += "share " + e.data.Share.Dump() + " "
 				}
 				str += "colle ["
-				data := make([]*EdgeData, worker.cube.L)
-				data[0] = e.data
+				data := make([]Data, worker.cube.Sc)
+				copy(data, e.data.Colle)
 				for i := 1; i < worker.cube.L; i++ {
-					resp := make(chan *EdgeData)
+					resp := make(chan []Data)
 					worker.cube.SendInternal(worker.node + i * worker.cube.NperL, CmdFetchEdge{eid: eid, resp: resp})
 					tmp := <-resp
-					data[i] = tmp
+					copy(data[worker.cube.LowerBound(i):], tmp)
 				}
-				combinedData := worker.cube.CombineEdgeData(data)
-				for _, v := range combinedData.Colle {
+				for _, v := range data {
 					str += v.Dump() + ", "
 				}
 				str += "]"
@@ -312,12 +321,12 @@ func (worker *Worker) handleCmd(cmds chan interface{}) {
 			}
 		case CmdPush:
 			if !worker.finalized {
-				panic("fuck")
+				panic("Call FinalizeGraph() first")
 			}
 			worker.cmdPush(_cmd.(CmdPush))
 		case CmdPull:
 			if !worker.finalized {
-				panic("fuck")
+				panic("Call FinalizeGraph() first")
 			}
 			worker.cmdPull(_cmd.(CmdPull))
 		}
@@ -330,6 +339,7 @@ func slave(cube *CUBE, node int, cmds chan interface{}, internal chan interface{
 	worker.cube = cube
 	worker.node = node
 	worker.layer_base = node / cube.NperL * cube.NperL
+	worker.nodeInLayer = worker.node - worker.layer_base
 	worker.localSc = cube.LowerBound(node / cube.NperL + 1) - cube.LowerBound(node / cube.NperL)
 	worker.vertices = make([]Vertex, 0)
 	worker.edges = make([]Edge, 0)

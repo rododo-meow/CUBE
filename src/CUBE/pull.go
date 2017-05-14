@@ -1,8 +1,23 @@
 package CUBE
 
+func (worker *Worker) cmdMirrorPull(cmd CmdMirrorVertexPull) {
+	sum := make([]interface{}, worker.localSc)
+	for _, e := range worker.edges {
+		if !e.mirror && worker.vertices[e.s].i == cmd.globalId {
+			v := *worker.vertices[e.t].data
+			for i, colled := range v.Colle {
+				sum[i] = cmd.sum(
+					sum[i],
+					cmd.g(v.Share, colled, e.data.Share, e.data.Colle[i]))
+			}
+		}
+	}
+	cmd.resp <- &sum
+}
+
 func (worker *Worker) cmdPull(cmd CmdPull) {
 	for vid, u := range worker.vertices {
-		if u.master == worker.node {
+		if u.master == worker.nodeInLayer {
 			sum := make([]interface{}, worker.localSc)
 			collected := make([]bool, worker.cube.NperL)
 			for i := range collected {

@@ -9,6 +9,8 @@ import (
 
 const testIter = 3
 func main() {
+
+	defer profile.Start(profile.CPUProfile, profile.ProfilePath(".")).Stop()
 	var N, L int
 	flag.IntVar(&N, "n", 0, "num of nodes")
 	flag.IntVar(&L, "l", 0, "num of layer")
@@ -23,12 +25,14 @@ func main() {
 	loadWiki(cube, "wikiElec.ElecBs3.txt")
 	//loadMtx(cube, "ash608.mtx")
 	//testGraph(cube, 2 * D)
+	//loadSampleGraph(cube)
+	println("Total", cube.NPureVertices, "vertices,", cube.NPureEdges, "edges")
+	println("λ=", float64(cube.NVertices) / float64(cube.NPureVertices) / float64(cube.L))
 
-	defer profile.Start(profile.CPUProfile, profile.ProfilePath(".")).Stop()
 	begin := time.Now()
 	for i := 0; i < testIter; i++ {
 		cube.Sink(F1)
-		cube.UpdateEdge(F2)
+		cube.UpdateEdge(F2, F5)
 		cube.Push(F3, F4, sum)
 		cube.Pull(F3, F4, sum)
 	}

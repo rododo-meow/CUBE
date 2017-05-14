@@ -14,11 +14,6 @@ type CmdAddVertex struct {
 	data *VertexData
 }
 
-type CmdCountIngress struct {
-	i    int
-	resp chan int
-}
-
 type CmdFinalizeGraph struct {
 	threshold int
 	resp      chan interface{}
@@ -41,24 +36,36 @@ type CmdFetchVertex struct {
 	resp chan *VertexData
 }
 
+type CmdPushVertex struct {
+	localId int
+	data    *VertexData
+}
+
 type CmdGetLocalId struct {
 	i    int
 	resp chan int
 }
 
 type CmdUpdateEdge struct {
-	f    func(*EdgeData)
-	done chan interface{}
+	f             UpdateEdgeFunc
+	localCombiner LocalCombinerFunc
+	done          chan interface{}
 }
 
 type CmdFetchEdge struct {
-	eid  int
-	resp chan *EdgeData
+	eid           int
+	resp          chan []Data
+	localCombiner LocalCombinerFunc
 }
 
 type CmdPushEdge struct {
 	eid  int
 	data *EdgeData
+}
+
+type CmdPushEdgeShare struct {
+	eid  int
+	data Data
 }
 
 type CmdDump struct {
@@ -110,7 +117,6 @@ func (cube *CUBE) SendCommand(i int, cmd interface{}) {
 }
 
 func (cube *CUBE) SendInternal(i int, cmd interface{}) {
-
 	switch cmd.(type) {
 	case CmdFetchVertex:
 		atomic.AddUint64(&cube.RpcCount.Internal, 1)
@@ -119,15 +125,35 @@ func (cube *CUBE) SendInternal(i int, cmd interface{}) {
 			uint64(1 + cube.LowerBound(i % cube.NperL + 1) - cube.LowerBound(i % cube.NperL)))
 	case CmdFetchEdge:
 		atomic.AddUint64(&cube.RpcCount.Internal, 1)
-		atomic.AddUint64(
-			&cube.RpcCount.InternalSize,
-			uint64(1 + cube.LowerBound(i % cube.NperL + 1) - cube.LowerBound(i % cube.NperL)))
+		if cmd.(CmdFetchEdge).localCombiner != nil {
+			atomic.AddUint64(
+				&cube.RpcCount.InternalSize,
+				1)
+		} else {
+			atomic.AddUint64(
+				&cube.RpcCount.InternalSize,
+				uint64(cube.LowerBound(i % cube.NperL + 1) - cube.LowerBound(i % cube.NperL)))
+		}
 	case CmdPushEdge:
 		atomic.AddUint64(&cube.RpcCount.Internal, 1)
 		atomic.AddUint64(
 			&cube.RpcCount.InternalSize,
 			uint64(1 + cube.LowerBound(i % cube.NperL + 1) - cube.LowerBound(i % cube.NperL)))
+	case CmdPushVertex:
+		atomic.AddUint64(&cube.RpcCount.Internal, 1)
+		atomic.AddUint64(
+			&cube.RpcCount.InternalSize,
+			uint64(1 + cube.LowerBound(i % cube.NperL + 1) - cube.LowerBound(i % cube.NperL)))
+	case CmdPushEdgeShare:
+		atomic.AddUint64(&cube.RpcCount.Internal, 1)
+		atomic.AddUint64(
+			&cube.RpcCount.InternalSize,
+			1)
 	case CmdMirrorVertexPull:
+		atomic.AddUint64(&cube.RpcCount.Internal, 1)
+		atomic.AddUint64(
+			&cube.RpcCount.InternalSize,
+			uint64(cube.LowerBound(i % cube.NperL + 1) - cube.LowerBound(i % cube.NperL)))
 	case CmdMirrorVertexPush:
 		atomic.AddUint64(&cube.RpcCount.Internal, 1)
 		atomic.AddUint64(

@@ -6,7 +6,7 @@ func (worker *Worker) cmdSink(cmd CmdSink) {
 			continue
 		}
 		var u, v *VertexData
-		if worker.vertices[e.s].master != worker.node {
+		if worker.vertices[e.s].master != worker.node && !worker.vertices[e.s].mirror {
 			resp := make(chan *VertexData)
 			worker.cube.SendInternal(worker.layer_base + worker.vertices[e.s].master,
 				CmdFetchVertex{i: worker.vertices[e.s].localId, resp: resp})

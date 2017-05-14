@@ -35,12 +35,12 @@ func F1(_, uColle CUBE.Data, _, vColle CUBE.Data, _ CUBE.Data, _ CUBE.Data) CUBE
 	return DColle{v: uColle.(DColle).v * vColle.(DColle).v}
 }
 
-func F2(e *CUBE.EdgeData) {
+func F2(share CUBE.Data, colle []CUBE.Data) *CUBE.EdgeData {
 	sum := 0.0
-	for _, v := range e.Colle {
+	for _, v := range colle {
 		sum += v.(DColle).v
 	}
-	e.Share = DShare{Rate: e.Share.(DShare).Rate, Err: e.Share.(DShare).Rate - sum}
+	return &CUBE.EdgeData{Share: DShare{Rate: share.(DShare).Rate, Err: share.(DShare).Rate - sum}, Colle: colle}
 }
 
 func F3(vshare CUBE.Data, vcolle CUBE.Data, eshare CUBE.Data, ecolle CUBE.Data) interface{} {
@@ -60,7 +60,17 @@ func F4(_ CUBE.Data, vcolle CUBE.Data, sum interface{}) CUBE.Data {
 func sum(a interface{}, b interface{}) interface{} {
 	if a == nil {
 		return b
+	} else if b == nil {
+		return a
 	} else {
 		return a.(float64) + b.(float64)
 	}
+}
+
+func F5(_ CUBE.Data, colle []CUBE.Data) CUBE.Data {
+	var sum float64 = 0
+	for _, d := range colle {
+		sum = sum + d.(DColle).v
+	}
+	return DColle{v: sum}
 }
