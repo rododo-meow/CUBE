@@ -28,300 +28,254 @@ func CountIngress(vertex int, edges []Edge) int {
 	}
 	return ret
 }
-func slave(cube *CUBE, node int, cmds chan interface{}, internal chan interface{}) {
-	layer_base := node / cube.NperL * cube.NperL
-	localSc := cube.LowerBound(node / cube.NperL + 1) - cube.LowerBound(node / cube.NperL)
-	vertices := make([]Vertex, 0)
-	edges := make([]Edge, 0)
-	finalizing, finalized := false, false
-	var finalize_sync sync.WaitGroup
-	finalize_sync.Add(cube.NperL - 1)
-	go func() {
-		for _cmd := range internal {
-			switch _cmd.(type) {
-			case CmdCountIngress:
-				cmd := _cmd.(CmdCountIngress)
-				cmd.resp <- CountIngress(cmd.i, edges)
-				break
-			case CmdAddVertexMirror:
-				cmd := _cmd.(CmdAddVertexMirror)
-				found := false
-				for vid, v := range vertices {
-					if v.i == cmd.i {
-						v.mirror = true
-						v.master = cube.TargetNode(v.i)
-						v.data = cmd.data
-						v.localId = cmd.localId
-						cmd.resp <- vid
-						found = true
-						break
-					}
+
+type Worker struct {
+	cube                  *CUBE
+	node                  int
+	layer_base            int
+	localSc               int
+	vertices              []Vertex
+	edges                 []Edge
+	finalizing, finalized bool
+	finalize_sync         sync.WaitGroup
+}
+
+func (worker *Worker) handleInternal(internal chan interface{}) {
+	for _cmd := range internal {
+		switch _cmd.(type) {
+		case CmdCountIngress:
+			cmd := _cmd.(CmdCountIngress)
+			cmd.resp <- CountIngress(cmd.i, worker.edges)
+			break
+		case CmdAddVertexMirror:
+			cmd := _cmd.(CmdAddVertexMirror)
+			found := false
+			for vid, v := range worker.vertices {
+				if v.i == cmd.i {
+					v.mirror = true
+					v.master = worker.cube.TargetNode(v.i)
+					v.data = cmd.data
+					v.localId = cmd.localId
+					cmd.resp <- vid
+					found = true
+					break
 				}
-				if !found {
-					vertices = append(vertices,
-						Vertex{i: cmd.i, mirror: true, master: cube.TargetNode(cmd.i), data: cmd.data, localId: cmd.localId})
-					cmd.resp <- len(vertices) - 1
-				}
-				break
-			case CmdAddEdgeMirror:
-				if finalizing {
-					panic("fuck")
-				}
-				cmd := _cmd.(CmdAddEdgeMirror)
-				edges = append(edges, Edge{s: cmd.s, t: cmd.t, mirror: true})
-				break
-			case CmdGetLocalId:
-				cmd := _cmd.(CmdGetLocalId)
-				found := false
-				for vid, v := range vertices {
-					if v.i == cmd.i {
-						cmd.resp <- vid
-						found = true
-						break
-					}
-				}
-				if !found {
-					panic("Vertex not found")
-				}
-				break
-			case CmdFetchVertex:
-				if !finalized {
-					panic("fuck")
-				}
-				cmd := _cmd.(CmdFetchVertex)
-				cmd.resp <- vertices[cmd.i].data
-				break
-			case CmdFetchEdge:
-				if !finalized {
-					panic("fuck")
-				}
-				cmd := _cmd.(CmdFetchEdge)
-				cmd.resp <- edges[cmd.eid].data
-				break
-			case CmdPushEdge:
-				if !finalized {
-					panic("fuck")
-				}
-				cmd := _cmd.(CmdPushEdge)
-				edges[cmd.eid].data = cmd.data
-				break
-			case CmdMirrorVertexPull:
-				cmd := _cmd.(CmdMirrorVertexPull)
-				sum := make([]interface{}, localSc)
-				for _, e := range edges {
-					if !e.mirror && vertices[e.s].i == cmd.globalId {
-						v := *vertices[e.t].data
-						for i, colled := range v.Colle {
-							sum[i] = cmd.sum(
-								sum[i],
-								cmd.g(v.Share, colled, e.data.Share, e.data.Colle[i]))
-						}
-					}
-				}
-				cmd.resp <- &sum
-				break
-			case CmdFinalizeSync:
-				finalize_sync.Done()
-			case CmdMirrorVertexPush:
-				cmd := _cmd.(CmdMirrorVertexPush)
-				sum := make([]interface{}, localSc)
-				for _, e := range edges {
-					if !e.mirror && e.t == cmd.localId {
-						v := vertices[e.t].data
-						for i, colled := range v.Colle {
-							sum[i] = cmd.sum(
-								sum[i],
-								cmd.g(v.Share, colled, e.data.Share, e.data.Colle[i]))
-						}
-					}
-				}
-				cmd.resp <- &sum
 			}
+			if !found {
+				worker.vertices = append(worker.vertices,
+					Vertex{i: cmd.i, mirror: true, master: worker.cube.TargetNode(cmd.i), data: cmd.data, localId: cmd.localId})
+				cmd.resp <- len(worker.vertices) - 1
+			}
+			break
+		case CmdAddEdgeMirror:
+			if worker.finalizing {
+				panic("fuck")
+			}
+			cmd := _cmd.(CmdAddEdgeMirror)
+			worker.edges = append(worker.edges, Edge{s: cmd.s, t: cmd.t, mirror: true})
+			break
+		case CmdGetLocalId:
+			cmd := _cmd.(CmdGetLocalId)
+			found := false
+			for vid, v := range worker.vertices {
+				if v.i == cmd.i {
+					cmd.resp <- vid
+					found = true
+					break
+				}
+			}
+			if !found {
+				panic("Vertex not found")
+			}
+			break
+		case CmdFetchVertex:
+			if !worker.finalized {
+				panic("fuck")
+			}
+			cmd := _cmd.(CmdFetchVertex)
+			cmd.resp <- worker.vertices[cmd.i].data
+			break
+		case CmdFetchEdge:
+			if !worker.finalized {
+				panic("fuck")
+			}
+			cmd := _cmd.(CmdFetchEdge)
+			cmd.resp <- worker.edges[cmd.eid].data
+			break
+		case CmdPushEdge:
+			if !worker.finalized {
+				panic("fuck")
+			}
+			cmd := _cmd.(CmdPushEdge)
+			worker.edges[cmd.eid].data = cmd.data
+			break
+		case CmdMirrorVertexPull:
+			cmd := _cmd.(CmdMirrorVertexPull)
+			sum := make([]interface{}, worker.localSc)
+			for _, e := range worker.edges {
+				if !e.mirror && worker.vertices[e.s].i == cmd.globalId {
+					v := *worker.vertices[e.t].data
+					for i, colled := range v.Colle {
+						sum[i] = cmd.sum(
+							sum[i],
+							cmd.g(v.Share, colled, e.data.Share, e.data.Colle[i]))
+					}
+				}
+			}
+			cmd.resp <- &sum
+			break
+		case CmdFinalizeSync:
+			worker.finalize_sync.Done()
+		case CmdMirrorVertexPush:
+			cmd := _cmd.(CmdMirrorVertexPush)
+			sum := make([]interface{}, worker.localSc)
+			for _, e := range worker.edges {
+				if !e.mirror && e.t == cmd.localId {
+					v := worker.vertices[e.t].data
+					for i, colled := range v.Colle {
+						sum[i] = cmd.sum(
+							sum[i],
+							cmd.g(v.Share, colled, e.data.Share, e.data.Colle[i]))
+					}
+				}
+			}
+			cmd.resp <- &sum
 		}
-	}()
+	}
+}
+
+func (worker *Worker) handleCmd(cmds chan interface{}) {
 	for _cmd := range cmds {
 		switch _cmd.(type) {
 		case CmdAddEdge:
-			if finalizing {
+			if worker.finalizing {
 				panic("fuck")
 			}
 			cmd := _cmd.(CmdAddEdge)
-			edges = append(edges, Edge{s: cmd.s, t: cmd.t, data: cmd.data})
+			worker.edges = append(worker.edges, Edge{s: cmd.s, t: cmd.t, data: cmd.data})
 			break
 		case CmdAddVertex:
-			if finalizing {
+			if worker.finalizing {
 				panic("fuck")
 			}
 			cmd := _cmd.(CmdAddVertex)
-			vertices = append(vertices, Vertex{i: cmd.i, data: cmd.data, master: node, localId: len(vertices)})
+			worker.vertices = append(worker.vertices,
+				Vertex{i: cmd.i, data: cmd.data, master: worker.node, localId: len(worker.vertices)})
 			break
 		case CmdFinalizeGraph:
-			if finalizing {
+			if worker.finalizing {
 				panic("fuck")
 			}
-			finalizing = true
+			worker.finalizing = true
 			cmd := _cmd.(CmdFinalizeGraph)
 
 			// First, collect all vertices' in-degree
 			// And distribute high-degree vertices
-			for vid, v := range vertices {
-				if v.master == node && CountIngress(vid, edges) > cmd.threshold {
-					for i := 0; i < cube.N / cube.L; i++ {
-						if layer_base + i == node {
+			for vid, v := range worker.vertices {
+				if v.master == worker.node && CountIngress(vid, worker.edges) > cmd.threshold {
+					for i := 0; i < worker.cube.N / worker.cube.L; i++ {
+						if worker.layer_base + i == worker.node {
 							continue
 						}
 						var movedEdge []Edge = []Edge{}
-						for j, e := range edges {
-							if e.t == v.i && cube.TargetNode(e.s) != node % cube.NperL {
+						for j, e := range worker.edges {
+							if e.t == v.i && worker.cube.TargetNode(e.s) != worker.node % worker.cube.NperL {
 								movedEdge = append(movedEdge, e)
-								if j == len(edges) - 1 {
-									edges = edges[:j]
+								if j == len(worker.edges) - 1 {
+									worker.edges = worker.edges[:j]
 								} else {
-									edges = append(edges[:j], edges[j + 1:]...)
+									worker.edges = append(worker.edges[:j], worker.edges[j + 1:]...)
 								}
 							}
 						}
 						resp := make(chan int)
-						cube.SendInternal(layer_base + i,
+						worker.cube.SendInternal(worker.layer_base + i,
 							CmdAddVertexMirror{i: v.i, data: v.data, localId: vid, edges: movedEdge, resp: resp})
-						v.mirrors = append(v.mirrors, layer_base + i, <-resp)
+						v.mirrors = append(v.mirrors, worker.layer_base + i, <-resp)
 					}
 				}
 			}
 
 			// Then, send synchronization signal
-			for i := 0; i < cube.NperL; i++ {
-				if layer_base + i == node {
+			for i := 0; i < worker.cube.NperL; i++ {
+				if worker.layer_base + i == worker.node {
 					continue
 				}
-				cube.SendInternal(layer_base + i, CmdFinalizeSync{})
+				worker.cube.SendInternal(worker.layer_base + i, CmdFinalizeSync{})
 			}
 
 			// Wait for all other nodes finish distribution
-			finalize_sync.Wait()
+			worker.finalize_sync.Wait()
 
 			// Generate globalId->localId mapping
 			vexist := make(map[int]int)
-			for i, v := range vertices {
+			for i, v := range worker.vertices {
 				vexist[v.i] = i
 			}
 
 			// Create mirror vertices if needed
-			for i, e := range edges {
-				snode := cube.TargetNode(e.s)
-				if snode != node {
+			for i, e := range worker.edges {
+				snode := worker.cube.TargetNode(e.s)
+				if snode != worker.node {
 					if _, ok := vexist[e.s]; !ok {
-						vertices = append(vertices, Vertex{i: e.s, master: snode})
-						vexist[e.s] = len(vertices) - 1
+						worker.vertices = append(worker.vertices, Vertex{i: e.s, master: snode})
+						vexist[e.s] = len(worker.vertices) - 1
 						resp := make(chan int)
-						cube.SendInternal(layer_base + cube.TargetNode(e.s),
+						worker.cube.SendInternal(worker.layer_base + worker.cube.TargetNode(e.s),
 							CmdGetLocalId{i: e.s, resp: resp})
-						vertices[len(vertices) - 1].localId = <-resp
+						worker.vertices[len(worker.vertices) - 1].localId = <-resp
 					}
 				}
-				tnode := cube.TargetNode(e.t)
-				if tnode != node {
+				tnode := worker.cube.TargetNode(e.t)
+				if tnode != worker.node {
 					if _, ok := vexist[e.t]; !ok {
-						vertices = append(vertices, Vertex{i: e.t, master: tnode})
-						vexist[e.t] = len(vertices) - 1
+						worker.vertices = append(worker.vertices, Vertex{i: e.t, master: tnode})
+						vexist[e.t] = len(worker.vertices) - 1
 						resp := make(chan int)
-						cube.SendInternal(layer_base + cube.TargetNode(e.t),
+						worker.cube.SendInternal(worker.layer_base + worker.cube.TargetNode(e.t),
 							CmdGetLocalId{i: e.t, resp: resp})
-						vertices[len(vertices) - 1].localId = <-resp
+						worker.vertices[len(worker.vertices) - 1].localId = <-resp
 					}
 				}
-				edges[i].s = vexist[e.s]
-				edges[i].t = vexist[e.t]
+				worker.edges[i].s = vexist[e.s]
+				worker.edges[i].t = vexist[e.t]
 			}
 
 			// Finalization finish
-			finalized = true
-			println("Node", node, "has", len(vertices), "vertices,", len(edges), "edges")
+			worker.finalized = true
+			println("Node", worker.node, "has", len(worker.vertices), "vertices,", len(worker.edges), "edges")
 			cmd.resp <- nil
-			break
 		case CmdSink:
-			if !finalized {
+			if !worker.finalized {
 				panic("fuck")
 			}
-			cmd := _cmd.(CmdSink)
-			for _, e := range edges {
-				if e.mirror {
-					continue
-				}
-				var u, v *VertexData
-				if vertices[e.s].master != node {
-					resp := make(chan *VertexData)
-					cube.SendInternal(layer_base + vertices[e.s].master,
-						CmdFetchVertex{i: vertices[e.s].localId, resp: resp})
-					u = <-resp
-				} else {
-					u = vertices[e.s].data
-				}
-				v = vertices[e.t].data
-				for i := range e.data.Colle {
-					e.data.Colle[i] = cmd.f(
-						u.Share,
-						u.Colle[i],
-						v.Share,
-						v.Colle[i],
-						e.data.Share,
-						e.data.Colle[i])
-				}
-			}
-			if cube.sync {
-				cmd.done <- nil
-			}
-			break
+			worker.cmdSink(_cmd.(CmdSink))
 		case CmdUpdateEdge:
-			if !finalized {
+			if !worker.finalized {
 				panic("fuck")
 			}
-			cmd := _cmd.(CmdUpdateEdge)
-			for eid, e := range edges {
-				if e.mirror {
-					continue
-				}
-				data := make([]*EdgeData, cube.L)
-				data[0] = edges[eid].data
-				for i := 1; i < cube.L; i++ {
-					resp := make(chan *EdgeData)
-					cube.SendInternal(node + i * cube.NperL, CmdFetchEdge{eid: eid, resp: resp})
-					tmp := <-resp
-					data[i] = tmp
-				}
-				combinedData := cube.CombineEdgeData(data)
-				cmd.f(combinedData)
-				edges[eid].data = cube.SplitEdgeData(combinedData, 0)
-				for i := 1; i < cube.L; i++ {
-					cube.SendInternal(node + i * cube.NperL,
-						CmdPushEdge{eid: eid, data: cube.SplitEdgeData(combinedData, i)})
-				}
-			}
-			if cube.sync {
-				cmd.done <- nil
-			}
-			break
+			worker.cmdUpdateEdge(_cmd.(CmdUpdateEdge))
 		case CmdDump:
-			if !finalized {
+			if !worker.finalized {
 				panic("fuck")
 			}
 			cmd := _cmd.(CmdDump)
-			for _, v := range vertices {
-				if v.master == node {
+			for _, v := range worker.vertices {
+				if v.master == worker.node {
 					str := fmt.Sprint("Vertex[", v.i, "]: ")
 					if v.data.Share != nil {
 						str += "share " + v.data.Share.Dump() + " "
 					}
 					str += "colle ["
-					data := make([]*VertexData, cube.L)
+					data := make([]*VertexData, worker.cube.L)
 					data[0] = v.data
-					for i := 1; i < cube.L; i++ {
+					for i := 1; i < worker.cube.L; i++ {
 						resp := make(chan *VertexData)
-						cube.SendInternal(node + i * cube.NperL, CmdFetchVertex{i: v.localId, resp: resp})
+						worker.cube.SendInternal(worker.node + i * worker.cube.NperL, CmdFetchVertex{i: v.localId, resp: resp})
 						tmp := <-resp
 						data[i] = tmp
 					}
-					combinedData := cube.CombineVertexData(data)
+					combinedData := worker.cube.CombineVertexData(data)
 					for _, v := range combinedData.Colle {
 						str += v.Dump() + ", "
 					}
@@ -329,135 +283,58 @@ func slave(cube *CUBE, node int, cmds chan interface{}, internal chan interface{
 					println(str)
 				}
 			}
-			for eid, e := range edges {
+			for eid, e := range worker.edges {
 				if e.mirror {
 					continue
 				}
-				str := fmt.Sprint("Edge[", vertices[e.s].i, "->", vertices[e.t].i, "]: ")
+				str := fmt.Sprint("Edge[", worker.vertices[e.s].i, "->", worker.vertices[e.t].i, "]: ")
 				if e.data.Share != nil {
 					str += "share " + e.data.Share.Dump() + " "
 				}
 				str += "colle ["
-				data := make([]*EdgeData, cube.L)
+				data := make([]*EdgeData, worker.cube.L)
 				data[0] = e.data
-				for i := 1; i < cube.L; i++ {
+				for i := 1; i < worker.cube.L; i++ {
 					resp := make(chan *EdgeData)
-					cube.SendInternal(node + i * cube.NperL, CmdFetchEdge{eid: eid, resp: resp})
+					worker.cube.SendInternal(worker.node + i * worker.cube.NperL, CmdFetchEdge{eid: eid, resp: resp})
 					tmp := <-resp
 					data[i] = tmp
 				}
-				combinedData := cube.CombineEdgeData(data)
+				combinedData := worker.cube.CombineEdgeData(data)
 				for _, v := range combinedData.Colle {
 					str += v.Dump() + ", "
 				}
 				str += "]"
 				println(str)
 			}
-			if cube.sync {
+			if worker.cube.sync {
 				cmd.done <- nil
 			}
-			break
 		case CmdPush:
-			if !finalized {
+			if !worker.finalized {
 				panic("fuck")
 			}
-			cmd := _cmd.(CmdPush)
-			for vid, v := range vertices {
-				if v.master == node {
-					sum := make([]interface{}, cube.LowerBound(node / cube.NperL + 1) - cube.LowerBound(node / cube.NperL))
-					if len(v.mirrors) != 0 {
-						// High-degree vertex, need to collect more data from mirror vertices
-						for i := 0; i < len(v.mirrors) / 2; i++ {
-							resp := make(chan *[]interface{})
-							cube.SendInternal(v.mirrors[i * 2],
-								CmdMirrorVertexPush{localId: v.mirrors[i * 2 + 1], resp: resp})
-							tmp := <-resp
-							for i, s := range *tmp {
-								sum[i] = cmd.sum(sum[i], s)
-							}
-						}
-					}
-					for _, e := range edges {
-						if e.t == vid {
-							var u *VertexData
-							if vertices[e.s].master == node || vertices[e.s].mirror {
-								// Local vertex
-								uvertex := vertices[e.s]
-								u = uvertex.data
-							} else {
-								// Pull data
-								resp := make(chan *VertexData)
-								cube.SendInternal(layer_base + vertices[e.s].master,
-									CmdFetchVertex{i: vertices[e.s].localId, resp: resp})
-								u = <-resp
-							}
-							for i, colled := range u.Colle {
-								sum[i] = cmd.sum(
-									sum[i],
-									cmd.g(
-										u.Share,
-										colled,
-										e.data.Share,
-										e.data.Colle[i]))
-							}
-						}
-					}
-					for i, d := range sum {
-						v.data.Colle[i] = cmd.a(v.data.Share, v.data.Colle[i], d)
-					}
-				}
-			}
-			if cube.sync {
-				cmd.done <- nil
-			}
-			break
+			worker.cmdPush(_cmd.(CmdPush))
 		case CmdPull:
-			if !finalized {
+			if !worker.finalized {
 				panic("fuck")
 			}
-			cmd := _cmd.(CmdPull)
-			for vid, u := range vertices {
-				if u.master == node {
-					sum := make([]interface{}, cube.LowerBound(node / cube.NperL + 1) - cube.LowerBound(node / cube.NperL))
-					collected := make([]bool, cube.N / cube.L)
-					for i := range collected {
-						collected[i] = false
-					}
-					for _, e := range edges {
-						if e.s == vid {
-							var v VertexData
-							if e.mirror {
-								if !collected[vertices[e.t].master] {
-									// Pull data
-									resp := make(chan *[]interface{})
-									cube.SendInternal(layer_base + vertices[e.t].master,
-										CmdMirrorVertexPull{globalId: u.i, resp: resp, g: cmd.g, sum: cmd.sum})
-									tmp := <-resp
-									for i := range *tmp {
-										sum[i] = cmd.sum(sum[i], (*tmp)[i])
-									}
-								}
-							} else {
-								// Local edge
-								v = *vertices[e.t].data
-								for i, colled := range v.Colle {
-									sum[i] = cmd.sum(
-										sum[i],
-										cmd.g(v.Share, colled, e.data.Share, e.data.Colle[i]))
-								}
-							}
-						}
-					}
-					for i, d := range sum {
-						u.data.Colle[i] = cmd.a(u.data.Share, u.data.Colle[i], d)
-					}
-				}
-			}
-			if cube.sync {
-				cmd.done <- nil
-			}
-			break
+			worker.cmdPull(_cmd.(CmdPull))
 		}
 	}
-	cube.wg.Done()
+	worker.cube.wg.Done()
+}
+
+func slave(cube *CUBE, node int, cmds chan interface{}, internal chan interface{}) {
+	worker := new(Worker)
+	worker.cube = cube
+	worker.node = node
+	worker.layer_base = node / cube.NperL * cube.NperL
+	worker.localSc = cube.LowerBound(node / cube.NperL + 1) - cube.LowerBound(node / cube.NperL)
+	worker.vertices = make([]Vertex, 0)
+	worker.edges = make([]Edge, 0)
+	worker.finalizing, worker.finalized = false, false
+	worker.finalize_sync.Add(cube.NperL - 1)
+	go worker.handleInternal(internal)
+	go worker.handleCmd(cmds)
 }
