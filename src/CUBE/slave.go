@@ -182,7 +182,7 @@ func (worker *Worker) handleCmd(cmds chan interface{}) {
 
 			// First, collect all vertices' in-degree
 			// And distribute high-degree vertices
-			for vid := 0; ; {
+			for vid := 0; ;vid++ {
 				worker.vlock.RLock()
 				if vid >= len(worker.vertices) {
 					break
