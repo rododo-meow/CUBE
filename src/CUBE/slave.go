@@ -235,6 +235,7 @@ func (worker *Worker) handleCmd(cmds chan interface{}) {
 			worker.vlock.RUnlock()
 
 			// Create mirror vertices if needed
+			worker.elock.Lock()
 			for i, e := range worker.edges {
 				if _, ok := vexist[e.s]; !ok {
 					worker.vertices = append(worker.vertices, Vertex{i: e.s, master: worker.cube.TargetNode(e.s)})
@@ -255,6 +256,7 @@ func (worker *Worker) handleCmd(cmds chan interface{}) {
 				worker.edges[i].s = vexist[e.s]
 				worker.edges[i].t = vexist[e.t]
 			}
+			worker.elock.Unlock()
 
 			// Finalization finish
 			worker.finalized = true
