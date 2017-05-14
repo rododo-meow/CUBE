@@ -185,6 +185,7 @@ func (worker *Worker) handleCmd(cmds chan interface{}) {
 			for vid := 0; ;vid++ {
 				worker.vlock.RLock()
 				if vid >= len(worker.vertices) {
+					worker.vlock.RUnlock()
 					break
 				}
 				v := worker.vertices[vid]
