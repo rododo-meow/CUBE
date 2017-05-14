@@ -182,8 +182,13 @@ func (worker *Worker) handleCmd(cmds chan interface{}) {
 
 			// First, collect all vertices' in-degree
 			// And distribute high-degree vertices
-			worker.vlock.RLock()
-			for vid, v := range worker.vertices {
+			for vid := 0; ; {
+				worker.vlock.RLock()
+				if vid >= len(worker.vertices) {
+					break
+				}
+				v := worker.vertices[vid]
+				worker.vlock.RUnlock()
 				if v.master == worker.nodeInLayer && CountIngress(v.i, worker.edges) > cmd.threshold {
 					for i := 0; i < worker.cube.NperL; i++ {
 						if worker.layer_base + i == worker.node {
@@ -208,7 +213,6 @@ func (worker *Worker) handleCmd(cmds chan interface{}) {
 					}
 				}
 			}
-			worker.vlock.RUnlock()
 
 			// Then, send synchronization signal
 			for i := 0; i < worker.cube.NperL; i++ {
